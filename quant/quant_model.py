@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.build_model import MatMul
-from .quant_modules import QuantConv2d, QuantLinear, QuantMatMul
+from utils.build_model import MatMul, ActQuant
+from .quant_modules import QuantConv2d, QuantLinear, QuantMatMul, QuantAct
 from copy import deepcopy
 
 
@@ -67,13 +67,18 @@ def quant_model(model, input_quant_params={}, weight_quant_params={}):
             else:
                 new_m = QuantMatMul(input_quant_params)
             setattr(father_module, name[idx:], new_m)
+        elif isinstance(m, ActQuant):
+            # Act Quant Layer
+            idx = idx + 1 if idx != 0 else idx
+            new_m = QuantAct(input_quant_params)
+            setattr(father_module, name[idx:], new_m)
 
     return model
 
 
 def set_quant_state(model, input_quant=False, weight_quant=False):
     for m in model.modules():
-        if isinstance(m, (QuantConv2d, QuantLinear, QuantMatMul)):
+        if isinstance(m, (QuantConv2d, QuantLinear, QuantMatMul, QuantAct)):
             m.set_quant_state(input_quant, weight_quant)
         # if isinstance(m, (QuantLinear, QuantMatMul)):
         #     m.set_quant_state(input_quant, weight_quant)

@@ -27,8 +27,8 @@ def build_dataset(args):
     val_transform = build_transform(mean=mean, std=std, crop_pct=crop_pct)
 
     # Data
-    traindir = os.path.join(args.dataset, 'train')
-    valdir = os.path.join(args.dataset, 'val')
+    traindir = args.train_dataset
+    valdir = args.val_dataset
 
     val_dataset = datasets.ImageFolder(valdir, val_transform)
     val_loader = torch.utils.data.DataLoader(

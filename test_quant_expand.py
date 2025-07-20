@@ -1,9 +1,15 @@
+import wandb
+import datetime
 import argparse
 import random
+import shutil
+
 from utils import *
 from quant import *
 import pickle
 import time
+
+from utils.wandb_util import wandb_and_log_init
 
 
 def get_args_parser():
@@ -13,7 +19,9 @@ def get_args_parser():
                                  'deit_tiny', 'deit_small', 'deit_base',
                                  'swin_tiny', 'swin_small', 'swin_base'],
                         help="model")
-    parser.add_argument('--dataset', default="/dataset/imagenet/",
+    parser.add_argument('--train_dataset', default="/dataset/imagenet/train",
+                        help='path to dataset')
+    parser.add_argument('--val_dataset', default="/dataset/imagenet/val",
                         help='path to dataset')
     parser.add_argument("--calib-batchsize", default=1024,
                         type=int, help="batchsize of validation set")
@@ -32,6 +40,16 @@ def get_args_parser():
                         type=int, help='bit-precision of activation')
     parser.add_argument('--coe', default=20000,
                         type=int, help='')
+
+    parser.add_argument("--rotation", default=None, type=str, choices=[None, 'random', 'hadamard'], help="rotation")
+
+
+
+    ## TODO: remove before publish
+    parser.add_argument('--project_name', type=str, default='SpinViT')
+    parser.add_argument('--wandb', action='store_false', default=True)
+    parser.add_argument('--comment', nargs='+', type=str, default=None)
+    parser.add_argument('--base_log_folder', type=str, default="./")
 
     return parser
 
@@ -89,7 +107,11 @@ def hook_fp_act(q_model, calib_data, args):
     for h in hooks:
         h.remove()
 
-    folder_path = f"fp_output/{args.model}-calib{args.calib_batchsize}-W{args.w_bits}A{args.a_bits}"
+    # folder_path = f"fp_output/{args.model}-calib{args.calib_batchsize}-W{args.w_bits}A{args.a_bits}"
+    if args.rotation:
+        folder_path = f"/data/nobackup/cache_nobackup/users/ariell/fp_output/{args.model}-calib{args.calib_batchsize}-W{args.w_bits}A{args.a_bits}R{args.rotation}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    else:
+        folder_path = f"/data/nobackup/cache_nobackup/users/ariell/fp_output/{args.model}-calib{args.calib_batchsize}-W{args.w_bits}A{args.a_bits}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(folder_path, exist_ok=True)
     for n, m in q_model.named_modules():
         if isinstance(m, QuantLinear):
@@ -155,7 +177,7 @@ def main():
     seed(args.seed)
 
     device = torch.device(args.device)
-
+    results_path = wandb_and_log_init(args)  ## TODO: remove before publish
     # Build dataloader
     print('Building dataloader ...')
     train_loader, val_loader = build_dataset(args)
@@ -167,8 +189,15 @@ def main():
     # Build model
     print('Building model ...')
     model = build_model(model_zoo[args.model])
+
+    # Rotate model
+    if args.rotation:
+        print('Rotating model ...')
+        model = rotate_model(model, args.rotation)
+
     model.to(device)
     model.eval()
+
 
     wq_params = {'n_bits': args.w_bits, 'channel_wise': True}
     aq_params = {'n_bits': args.a_bits, 'channel_wise': False}
@@ -966,6 +995,7 @@ def main():
         print(a.cpu().numpy())
 
     replace_W_afterquant_vector_twopart(q_model, fp_folder_path, args)
+    shutil.rmtree(fp_folder_path)
 
     #
     set_quant_state(q_model, input_quant=True, weight_quant=True)
@@ -983,6 +1013,26 @@ def main():
     val_loss, val_prec1, val_prec5 = validate(
         args, val_loader, q_model, criterion, device
     )
+
+    #######################################################################
+    # TODO: remove before publish
+    if args.wandb:
+        wandb.log({"compressed_accuracy": val_prec1,
+                   "w_bit_width": args.w_bits,
+                   "a_bit_width": args.a_bits})
+        wandb.log({f"W{args.w_bits}A{args.a_bits}": val_prec1})
+
+        # Clear large wandb files: run-<id>.wandb and logs/debug-internal.log
+        run_path = os.path.sep.join(wandb.run.dir.split(os.path.sep)[:-1])
+        internal_log_file = os.path.join(run_path, 'logs', 'debug-internal.log')
+        wandb_files = [os.path.join(run_path, f) for f in os.listdir(run_path) if f.endswith('wandb')]
+        wandb.finish()
+
+        # Delete the debug-internal.log file
+        if os.path.isfile(internal_log_file):
+            os.remove(internal_log_file)
+        for f in wandb_files:
+            os.remove(f)
 
 
 def validate(args, val_loader, model, criterion, device):

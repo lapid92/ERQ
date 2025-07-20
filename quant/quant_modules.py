@@ -122,12 +122,13 @@ class QuantLinear(nn.Linear):
         out = F.linear(x, weight=w, bias=self.bias)
 
         return out
-        
+
 
 class QuantMatMul(nn.Module):
     """
     Class to quantize weights of given Linear layer
     """
+
     def __init__(self,
                  input_quant_params={}):
         super(QuantMatMul, self).__init__()
@@ -148,7 +149,7 @@ class QuantMatMul(nn.Module):
         s = super(QuantMatMul, self).__repr__()
         s = "(" + s + "input_quant={})".format(self.use_input_quant)
         return s
-    
+
     def set_quant_state(self, input_quant=False, weight_quant=False):
         self.use_input_quant = input_quant
 
@@ -160,3 +161,30 @@ class QuantMatMul(nn.Module):
         #     print(torch.unique(A).shape, torch.unique(B).shape)
         out = A @ B
         return out
+
+
+class QuantAct(nn.Module):
+    """
+    Class to quantize activations
+    """
+
+    def __init__(self,
+                 input_quant_params={}):
+        super(QuantAct, self).__init__()
+
+        self.quantizer = UniformQuantizer(**input_quant_params)
+
+        self.use_input_quant = False
+
+    def __repr__(self):
+        s = super(QuantAct, self).__repr__()
+        s = "(" + s + "input_quant={})".format(self.use_input_quant)
+        return s
+
+    def set_quant_state(self, input_quant=False, weight_quant=False):
+        self.use_input_quant = input_quant
+
+    def forward(self, A):
+        if self.use_input_quant:
+            A = self.quantizer(A)
+        return A
