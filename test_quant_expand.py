@@ -42,6 +42,11 @@ def get_args_parser():
                         type=int, help='')
 
     parser.add_argument("--rotation", default=None, type=str, choices=[None, 'random', 'hadamard'], help="rotation")
+    parser.add_argument("--add_linear_bf_head", action='store_true', default=False)
+    parser.add_argument("--add_linear_af_embed", action='store_true', default=False)
+    parser.add_argument("--replace_ln", action='store_true', default=False)
+    parser.add_argument("--float_evaluation", action='store_true', default=False)
+    parser.add_argument("--rotation_float_evaluation", action='store_true', default=False)
 
 
 
@@ -186,18 +191,46 @@ def main():
         target = target.to(device)
         break
 
+    # Define loss function (criterion)
+    criterion = nn.CrossEntropyLoss().to(device)
+
     # Build model
     print('Building model ...')
-    model = build_model(model_zoo[args.model])
-
-    # Rotate model
-    if args.rotation:
-        print('Rotating model ...')
-        model = rotate_model(model, args.rotation)
+    model = build_model(model_zoo[args.model], add_linear_af_embed=args.add_linear_af_embed)
 
     model.to(device)
     model.eval()
 
+    if args.float_evaluation:
+        # Validate the model
+        print("Validating float...")
+        val_loss, val_prec1, val_prec5 = validate(
+            args, val_loader, model, criterion, device
+        )
+        # TODO: remove before publish
+        if args.wandb:
+            wandb.log({"float_accuracy": val_prec1})
+
+    # Rotate model
+    if args.rotation:
+        print('Rotating model ...')
+        model = rotate_model(model, args.rotation,
+                             add_linear_bf_head=args.add_linear_bf_head,
+                             replace_ln=args.replace_ln,
+                             add_linear_af_embed=args.add_linear_af_embed)
+
+        model.to(device)
+        model.eval()
+
+        if args.rotation_float_evaluation:
+            # Validate the rotated model
+            print("Validating Rotated float...")
+            val_loss, val_prec1, val_prec5 = validate(
+                args, val_loader, model, criterion, device
+            )
+            # TODO: remove before publish
+            if args.wandb:
+                wandb.log({"rotated_float_accuracy": val_prec1})
 
     wq_params = {'n_bits': args.w_bits, 'channel_wise': True}
     aq_params = {'n_bits': args.a_bits, 'channel_wise': False}
@@ -207,8 +240,6 @@ def main():
 
 
 
-    # Define loss function (criterion)
-    criterion = nn.CrossEntropyLoss().to(device)
 
     @torch.no_grad()
     def reparameterization(q_model):

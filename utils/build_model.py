@@ -25,7 +25,26 @@ def forward_features(self, x):
     x = self.pos_drop(x + self.pos_embed)
     x = self.embed_act_quant(x)
     x = self.blocks(x)
-    x = self.norm_head_act_quant(self.norm(x))
+    x = self.norm_head_act_quant(x)
+    x = self.norm(x)
+    if self.dist_token is None:
+        return self.pre_logits(x[:, 0])
+    else:
+        return x[:, 0], x[:, 1]
+def forward_features_add_linear_af_embed(self, x):
+    x = self.patch_embed(x)
+    cls_token = self.cls_token.expand(x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+    if self.dist_token is None:
+        x = torch.cat((cls_token, x), dim=1)
+    else:
+        x = torch.cat((cls_token, self.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
+    x = self.pos_drop(x + self.pos_embed)
+    x = self.rotation_linear(x)
+    x = self.embed_act_quant(x)
+    x = self.blocks(x)
+    x = self.norm_head_act_quant(x)
+    # x = self.rotation_linear(x)
+    x = self.norm(x)
     if self.dist_token is None:
         return self.pre_logits(x[:, 0])
     else:
@@ -91,7 +110,7 @@ class MatMul(nn.Module):
         return A @ B
 
 
-def build_model(name):
+def build_model(name, add_linear_af_embed=False):
     """
     Get a vision transformer model.
     This will replace matrix multiplication operations with matmul modules in the model.
@@ -123,7 +142,11 @@ def build_model(name):
         if isinstance(module, VisionTransformer):
             setattr(module, "embed_act_quant", ActQuant())
             setattr(module, "norm_head_act_quant", ActQuant())
-            module.forward_features = MethodType(forward_features, module)
+            if add_linear_af_embed:
+                setattr(module, "rotation_linear", nn.Linear(model.embed_dim, model.embed_dim, bias=False))
+                module.forward_features = MethodType(forward_features_add_linear_af_embed, module)
+            else:
+                module.forward_features = MethodType(forward_features, module)
 
     return model
 
@@ -144,7 +167,7 @@ def get_orthogonal_matrix(size, mode="hadamard", device='cuda'):
     return False
 
 
-def rotate_model(model, rotation_type):
+def rotate_model(model, rotation_type, add_linear_bf_head=False, replace_ln=False, add_linear_af_embed=False):
     device = model.head.weight.device
     hidden_size = model.embed_dim
     R = get_orthogonal_matrix(size=hidden_size, mode=rotation_type, device=device)
@@ -183,17 +206,22 @@ def rotate_model(model, rotation_type):
                 # Step 2.b
                 # TODO:
                 # apply from outside flag
-                # setattr(model, name, nn.RMSNorm(hidden_size))
+                if replace_ln:
+                    # Replace LayerNorm with RMSNorm
+                    rms = nn.RMSNorm(module.normalized_shape, eps=module.eps)
+                    rms.weight = module.weight
+                    rms.bias = module.bias
+                    setattr(model, name, rms)
 
                 # Step 2.c - Fold R.T into LINEAR_IN
                 input_linear_module.weight = nn.Parameter(torch.matmul(input_linear_module.weight, R.T))
 
                 output_linear_module = model.get_submodule(father_name + '.attn.proj')
 
-                output_linear_module.weight = nn.Parameter(torch.matmul(R, output_linear_module.weight))
+                output_linear_module.weight = nn.Parameter(torch.matmul(R1, output_linear_module.weight))
 
                 if output_linear_module.bias is not None:
-                    output_linear_module.bias = nn.Parameter(torch.matmul(R, output_linear_module.bias))
+                    output_linear_module.bias = nn.Parameter(torch.matmul(R1, output_linear_module.bias))
             # MLP
             elif norm_type == 'norm2':
                 input_linear_module = model.get_submodule(father_name + '.mlp.fc1')
@@ -207,7 +235,12 @@ def rotate_model(model, rotation_type):
                 # Step 2.b
                 # TODO:
                 # apply from outside flag
-                # norm_node.layer_class = nn.RMSNorm
+                if replace_ln:
+                    # Replace LayerNorm with RMSNorm
+                    rms = nn.RMSNorm(module.normalized_shape, eps=module.eps)
+                    rms.weight = module.weight
+                    rms.bias = module.bias
+                    setattr(model, name, rms)
                 # norm_node.framework_attr.pop('bias')
                 # norm_node.weights.pop('bias')
 
@@ -216,51 +249,67 @@ def rotate_model(model, rotation_type):
 
                 output_linear_module = model.get_submodule(father_name + '.mlp.fc2')
 
-                output_linear_module.weight = nn.Parameter(torch.matmul(R, output_linear_module.weight))
+                output_linear_module.weight = nn.Parameter(torch.matmul(R1, output_linear_module.weight))
 
                 if output_linear_module.bias is not None:
-                    output_linear_module.bias = nn.Parameter(torch.matmul(R, output_linear_module.bias))
+                    output_linear_module.bias = nn.Parameter(torch.matmul(R1, output_linear_module.bias))
             elif norm_type == 'norm':
-                # TODO:
-                # add R
-                head_module = model.get_submodule('head')
-                if head_module.bias is not None:
-                    head_module.bias = nn.Parameter(head_module.bias + head_module.weight @ module.bias)
-                module.bias = nn.Parameter(torch.zeros_like(module.bias))
+                if add_linear_bf_head:
+                    linear_rt = nn.Linear(hidden_size, hidden_size)
+                    linear_rt.weight = nn.Parameter(torch.matmul(R.T, C))
+                    linear_rt.bias = nn.Parameter(torch.zeros_like(module.bias))
+                    # Define Linear + Norm
+                    new_module = nn.Sequential(
+                        linear_rt,
+                        module  # reuses the original norm
+                    )
 
-                head_module.weight = nn.Parameter(head_module.weight * module.weight)
-                module.weight = nn.Parameter(torch.ones_like(module.weight))
+                    # Replace in parent
+                    setattr(model, name, new_module)
+                else:
+                    head_module = model.get_submodule('head')
+                    if head_module.bias is not None:
+                        head_module.bias = nn.Parameter(head_module.bias + head_module.weight @ module.bias)
+                    module.bias = nn.Parameter(torch.zeros_like(module.bias))
 
-                # Step 2.b
-                # TODO:
-                # apply from outside flag
-                # norm_node.layer_class = nn.RMSNorm
-                # norm_node.framework_attr.pop('bias')
-                # norm_node.weights.pop('bias')
+                    head_module.weight = nn.Parameter(head_module.weight * module.weight)
+                    module.weight = nn.Parameter(torch.ones_like(module.weight))
 
-                # Step 2.c - Fold R.T into LINEAR_IN
-                head_module.weight = nn.Parameter(torch.matmul(head_module.weight, R.T))
+                    # Step 2.b
+                    # TODO:
+                    # apply from outside flag
+                    if replace_ln:
+                        rms = nn.RMSNorm(module.normalized_shape, eps=module.eps)
+                        rms.weight = module.weight
+                        rms.bias = module.bias
+                        setattr(model, name, rms)
+
+                    # Step 2.c - Fold R.T into LINEAR_IN
+                    head_module.weight = nn.Parameter(torch.matmul(head_module.weight, R.T))
 
         if isinstance(module, nn.Conv2d):
-            # Rotate Conv
-            folded_weight = torch.einsum('oi,icxy->ocxy', R1, module.weight)
-            module.weight = nn.Parameter(folded_weight)
+            if add_linear_af_embed:
+                model.rotation_linear.weight = nn.Parameter(R1)
+            else:
+                # Rotate Conv
+                folded_weight = torch.einsum('oi,icxy->ocxy', R1, module.weight)
+                module.weight = nn.Parameter(folded_weight)
 
-            # Rotate bias
-            if module.bias is not None:
-                module.bias = nn.Parameter(R1 @ module.bias)
+                # Rotate bias
+                if module.bias is not None:
+                    module.bias = nn.Parameter(R1 @ module.bias)
 
-            # Rotate cls_token
-            if hasattr(model, 'cls_token') and model.cls_token is not None:
-                model.cls_token = nn.Parameter(model.cls_token @ R1.T)
+                # Rotate cls_token
+                if hasattr(model, 'cls_token') and model.cls_token is not None:
+                    model.cls_token = nn.Parameter(model.cls_token @ R1.T)
 
-            # Rotate pos_embed
-            if hasattr(model, 'pos_embed') and model.pos_embed is not None:
-                model.pos_embed = nn.Parameter(model.pos_embed @ R1.T)
+                # Rotate pos_embed
+                if hasattr(model, 'pos_embed') and model.pos_embed is not None:
+                    model.pos_embed = nn.Parameter(model.pos_embed @ R1.T)
 
-            # Rotate pos_embed
-            if hasattr(model, 'absolute_pos_embed') and model.absolute_pos_embed is not None:
-                model.absolute_pos_embed = nn.Parameter(model.absolute_pos_embed @ R1.T)
+                # Rotate pos_embed
+                if hasattr(model, 'absolute_pos_embed') and model.absolute_pos_embed is not None:
+                    model.absolute_pos_embed = nn.Parameter(model.absolute_pos_embed @ R1.T)
     # fix head
     # skin every LN
     # rotate every linear by name
