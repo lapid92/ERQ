@@ -167,10 +167,13 @@ def get_orthogonal_matrix(size, mode="hadamard", device='cuda'):
     return False
 
 
-def rotate_model(model, rotation_type, add_linear_bf_head=False, replace_ln=False, add_linear_af_embed=False):
+def rotate_model(model, rotation_type, rotation_mat=None, add_linear_bf_head=False, replace_ln=False, add_linear_af_embed=False):
     device = model.head.weight.device
     hidden_size = model.embed_dim
-    R = get_orthogonal_matrix(size=hidden_size, mode=rotation_type, device=device)
+    if rotation_mat is not None:
+        R = rotation_mat
+    else:
+        R = get_orthogonal_matrix(size=hidden_size, mode=rotation_type, device=device, model=model)
 
     # For LN folding
     C = torch.eye(hidden_size) - torch.ones((hidden_size, hidden_size)) / hidden_size
