@@ -9,6 +9,7 @@ from quant import *
 import pickle
 import time
 
+from utils.qsur_utils import stat_collect_model, qsur_opt_matrix
 from utils.wandb_util import wandb_and_log_init
 
 
@@ -41,12 +42,13 @@ def get_args_parser():
     parser.add_argument('--coe', default=20000,
                         type=int, help='')
 
-    parser.add_argument("--rotation", default=None, type=str, choices=[None, 'random', 'hadamard'], help="rotation")
+    parser.add_argument("--rotation", default=None, type=str, choices=[None, 'random', 'hadamard', 'qsur'], help="rotation")
     parser.add_argument("--add_linear_bf_head", action='store_true', default=False)
     parser.add_argument("--add_linear_af_embed", action='store_true', default=False)
     parser.add_argument("--replace_ln", action='store_true', default=False)
     parser.add_argument("--float_evaluation", action='store_true', default=False)
     parser.add_argument("--rotation_float_evaluation", action='store_true', default=False)
+    parser.add_argument('--qsur_topk', default=50, type=int, help='')
 
 
 
@@ -212,9 +214,16 @@ def main():
             wandb.log({"float_accuracy": val_prec1})
 
     # Rotate model
+    opt_rot = None
+    if args.rotation == "qsur":
+        stat_collector_model = stat_collect_model(model).to(device).eval()
+        with torch.no_grad():
+            _ = stat_collector_model(calib_data)
+        opt_rot = qsur_opt_matrix(stat_collector_model, N=args.qsur_topk)
+
     if args.rotation:
         print('Rotating model ...')
-        model = rotate_model(model, args.rotation,
+        model = rotate_model(model, args.rotation, rotation_mat=opt_rot,
                              add_linear_bf_head=args.add_linear_bf_head,
                              replace_ln=args.replace_ln,
                              add_linear_af_embed=args.add_linear_af_embed)
