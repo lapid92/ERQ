@@ -42,7 +42,7 @@ def stat_collect_model(in_model):
     return model
 
 
-def qsur_opt_matrix(stat_collector: nn.Module, N: 50):
+def qsur_opt_matrix(stat_collector: nn.Module, N: 50, select_tokens: str = 'var_top'):
     """
     """
     actquant_modules = [m.activation_buffer for m in stat_collector.modules() if isinstance(m, ActCollector)]
@@ -53,9 +53,12 @@ def qsur_opt_matrix(stat_collector: nn.Module, N: 50):
     X = X.reshape(-1, X.shape[-1])  # shape: [N * 197, 384]
 
     # Get top-N indices
-    row_var = X.var(dim=1, unbiased=False)  # shape: [num_vectors]
-    top_indices = torch.topk(row_var, N, largest=True).indices
-    X = X[top_indices]
+    if select_tokens == 'var_top':
+        row_var = X.var(dim=1, unbiased=False)  # shape: [num_vectors]
+        top_indices = torch.topk(row_var, N, largest=True).indices
+        X = X[top_indices]
+    elif select_tokens == 'last':
+        X = X[-N:, ...]
 
     # Compute covariance
     X = X - X.mean(dim=0, keepdim=True)

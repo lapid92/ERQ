@@ -48,7 +48,9 @@ def get_args_parser():
     parser.add_argument("--replace_ln", action='store_true', default=False)
     parser.add_argument("--float_evaluation", action='store_true', default=False)
     parser.add_argument("--rotation_float_evaluation", action='store_true', default=False)
-    parser.add_argument('--qsur_topk', default=50, type=int, help='')
+    parser.add_argument('--qsur_n_tokens', default=50, type=int, help='')
+    parser.add_argument("--qsur_select_tokens", default=None, type=str, choices=[None, 'var_top', 'last'], help="How to select the n activation tokens")
+    parser.add_argument("--reparam", action='store_false', default=True)
 
 
 
@@ -219,7 +221,7 @@ def main():
         stat_collector_model = stat_collect_model(model).to(device).eval()
         with torch.no_grad():
             _ = stat_collector_model(calib_data)
-        opt_rot = qsur_opt_matrix(stat_collector_model, N=args.qsur_topk)
+        opt_rot = qsur_opt_matrix(stat_collector_model, N=args.qsur_n_tokens, select_tokens=args.qsur_select_tokens)
 
     if args.rotation:
         print('Rotating model ...')
@@ -1016,7 +1018,8 @@ def main():
     # computer W by fp-act and quant-act
     set_quant_state(q_model, input_quant=True, weight_quant=False)
     # repar first
-    reparameterization(q_model)
+    if args.reparam:
+        reparameterization(q_model)
     ## store fp output
     set_quant_state(q_model, input_quant=False, weight_quant=False)
     fp_folder_path = hook_fp_act(q_model, calib_data, args)
