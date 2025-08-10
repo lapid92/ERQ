@@ -173,7 +173,7 @@ def rotate_model(model, rotation_type, rotation_mat=None, add_linear_bf_head=Fal
     if rotation_mat is not None:
         R = rotation_mat
     else:
-        R = get_orthogonal_matrix(size=hidden_size, mode=rotation_type, device=device, model=model)
+        R = get_orthogonal_matrix(size=hidden_size, mode=rotation_type, device=device)
 
     # For LN folding
     C = torch.eye(hidden_size) - torch.ones((hidden_size, hidden_size)) / hidden_size
